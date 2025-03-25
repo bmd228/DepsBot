@@ -35,18 +35,18 @@ def setup_chroot(ubuntu_codename):
             check=True
         )
 # Функция для добавления кастомного репозитория в sources.list
-def add_custom_repo(ubuntu_codename, repo_url):
+def add_custom_repo(ubuntu_codename, repo_url,type):
     sources_list_path = f"/srv/chroot/{ubuntu_codename}/etc/apt/sources.list"
     
     # Проверяем, существует ли уже такой репозиторий
     with open(sources_list_path, "r") as f:
         sources = f.readlines()
-        if f"deb [trusted=yes] {repo_url} {ubuntu_codename} main" in sources:
+        if f"{type} [trusted=yes] {repo_url} {ubuntu_codename} main" in sources:
             return f"Репозиторий {repo_url} уже добавлен."
     
     # Добавляем репозиторий в sources.list
     with open(sources_list_path, "a") as f:
-        f.write(f"deb [trusted=yes] {repo_url} {ubuntu_codename} main\n")
+        f.write(f"{type} [trusted=yes] {repo_url} {ubuntu_codename} main\n")
     chroot_cmd = f"chroot /srv/chroot/{ubuntu_codename} apt update --allow-unauthenticated"
     
     result = subprocess.run(chroot_cmd, shell=True, capture_output=True, text=True)
@@ -56,14 +56,14 @@ def add_custom_repo(ubuntu_codename, repo_url):
 
     return f"Репозиторий {repo_url} добавлен в sources.list."
 # Функция для удаления кастомного репозитория из sources.list
-def remove_custom_repo(ubuntu_codename, repo_url):
+def remove_custom_repo(ubuntu_codename, repo_url,type):
     sources_list_path = f"/srv/chroot/{ubuntu_codename}/etc/apt/sources.list"
     
     with open(sources_list_path, "r") as f:
         sources = f.readlines()
     
     # Ищем строку с репозиторием и удаляем её
-    repo_line = f"deb [trusted=yes] {repo_url} {ubuntu_codename} main\n"
+    repo_line = f"{type} [trusted=yes] {repo_url} {ubuntu_codename} main\n"
     if repo_line in sources:
         sources.remove(repo_line)
         
@@ -94,17 +94,20 @@ def list_custom_repos(ubuntu_codename):
 async def add_repo(message: types.Message):
     try:
         parts = message.text.split()
-        if len(parts) != 3:
-            await message.reply("Использование: /addrepo [версия_ubuntu] [URL_репозитория]")
+        if len(parts) != 4:
+            await message.reply("Использование: /addrepo [версия_ubuntu] [тип_репозитория(deb|deb-src)] [URL_репозитория]")
             return
         
-        _, ubuntu_version, repo_url = parts
+        _, ubuntu_version,type, repo_url = parts
+        if type not in ["deb","deb-src"]:
+            await message.reply(f"Тип {type} не поддерживается(deb|deb-src).")
+            return
         if ubuntu_version not in SUPPORTED_UBUNTU_VERSIONS:
             await message.reply(f"Версия Ubuntu {ubuntu_version} не поддерживается.")
             return
         
         ubuntu_codename = SUPPORTED_UBUNTU_VERSIONS[ubuntu_version]
-        result = add_custom_repo(ubuntu_codename, repo_url)
+        result = add_custom_repo(ubuntu_codename, repo_url,type)
         await message.reply(result)
     
     except Exception as e:
@@ -114,17 +117,20 @@ async def add_repo(message: types.Message):
 async def del_repo(message: types.Message):
     try:
         parts = message.text.split()
-        if len(parts) != 3:
-            await message.reply("Использование: /delrepo [версия_ubuntu] [URL_репозитория]")
+        if len(parts) != 4:
+            await message.reply("Использование: /delrepo [версия_ubuntu] [тип_репозитория(deb|deb-src)]  [URL_репозитория]")
             return
         
-        _, ubuntu_version, repo_url = parts
+        _, ubuntu_version,type, repo_url = parts
+        if type not in ["deb","deb-src"]:
+            await message.reply(f"Тип {type} не поддерживается(deb|deb-src).")
+            return
         if ubuntu_version not in SUPPORTED_UBUNTU_VERSIONS:
             await message.reply(f"Версия Ubuntu {ubuntu_version} не поддерживается.")
             return
         
         ubuntu_codename = SUPPORTED_UBUNTU_VERSIONS[ubuntu_version]
-        result = remove_custom_repo(ubuntu_codename, repo_url)
+        result = remove_custom_repo(ubuntu_codename, repo_url,type)
         await message.reply(result)
     
     except Exception as e:
@@ -165,8 +171,8 @@ async def help_command(message: types.Message):
         "/getpkg [версия_ubuntu] [пакеты]...  - скачивание пакета для указанной версии Ubuntu.\n"
         "/getdocker [докер образ]  - докер образа.\n"
         "/searchpkg [версия_ubuntu] [пакет] - поиск пакетов в репозитории"
-        "/addrepo [версия_ubuntu] [URL_репозитория] - добавление кастомного репозитория в sources.list.\n"
-        "/delrepo [версия_ubuntu] [URL_репозитория] - удаление кастомного репозитория из sources.list.\n"
+        "/addrepo [версия_ubuntu] [Тип репозитория(deb|deb-src)] [URL_репозитория] - добавление кастомного репозитория в sources.list.\n"
+        "/delrepo [версия_ubuntu] [Тип репозитория(deb|deb-src)] [URL_репозитория] - удаление кастомного репозитория из sources.list.\n"
         "/listrepos [версия_ubuntu] - просмотр всех добавленных кастомных репозиториев для указанной версии Ubuntu.\n\n"
         "Пример использования:\n"
         "/addrepo 22.04 http://my.custom.repo/ubuntu - добавление кастомного репозитория.\n"
