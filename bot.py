@@ -2,12 +2,15 @@ import os
 import shutil
 import subprocess
 import asyncio
+import threading
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import InputFile,FSInputFile
 from aiohttp import web
 from pathlib import Path
 from io import BytesIO
+import hashlib
+from npmdownloader import NpmPackageDownloader
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "your_token_here")
 EXTERNAL_ADDR = os.getenv("IP_ADDRES", "localhost")
 bot = Bot(token=TOKEN,timeout=1800)
@@ -15,6 +18,8 @@ dp = Dispatcher()
 
 BASE_DIR = "/app/packages"
 os.makedirs(BASE_DIR, exist_ok=True)
+
+NPM_VERSION=[]
 
 SUPPORTED_UBUNTU_VERSIONS = {
     "25.04": "plucky",
@@ -225,6 +230,7 @@ async def help_command(message: types.Message):
         "/getpkg [операционная_система] [версия] [пакеты]...  - скачивание пакета для указанной версии.\n"
         "/getdocker [докер образ]  - докер образа.\n"
         "/getpy [операционная_система] [версия python] [пакеты]...  - скачивание пакетов для python.\n"
+        "/getnpm [имя_пакета@версия]...  - скачивание пакетов npm (разделение через пробел).\n"
         "/searchpkg [операционная_система] [версия] [пакет] - поиск пакетов в репозитории\n"
         "/addrepo [операционная_система] [версия] [строка source_list] - добавление кастомного репозитория в sources.list.\n"
         "/delrepo [операционная_система] [версия] [номер_строки] - удаление кастомного репозитория из sources.list.\n"
@@ -234,7 +240,11 @@ async def help_command(message: types.Message):
         "Пример использования:\n"
         "/addrepo ubuntu 22.04 deb [trusted=yes] http://archive.ubuntu.com/ubuntu jammy main) - добавление кастомного репозитория.\n"
         "/delrepo ubuntu 22.04 2 - удаление кастомного репозитория.\n"
-        "/listrepos ubuntu 22.04 - просмотр репозиториев.\n\n"
+        "/listrepos ubuntu 22.04 - просмотр репозиториев.\n"
+        "/getnpm react@15.4.1   - получение npm пакетов.\n"
+        "/getpkg ubuntu 22 pkg-config   - получение deb пакетов.\n"
+        "/getdocker nginx:lates   - получение докер образа.\n"
+        "/getpy win 312 pydom - получение python пакетов.\n\n"
         "Операционные системы: debian или ubuntu."
     )
     await message.reply(help_text)
@@ -247,7 +257,8 @@ async def download_packages_ubuntu(pkg_names, ubuntu_version, chat_id):
     ubuntu_codename = SUPPORTED_UBUNTU_VERSIONS[ubuntu_version]
     setup_chroot_ubuntu(ubuntu_codename)
 
-    work_dir = os.path.join(BASE_DIR, f"{'_'.join(pkg_names)}_{ubuntu_codename}")
+    pkg_string = f"{'_'.join(pkg_names)}_{ubuntu_codename}"
+    work_dir = os.path.join(BASE_DIR,hashlib.sha256(pkg_string.encode()).hexdigest()[:32])
     os.makedirs(work_dir, exist_ok=True)
 
     archive_path = f"{work_dir}.tar.gz"
@@ -261,8 +272,9 @@ async def download_packages_ubuntu(pkg_names, ubuntu_version, chat_id):
     # Собираем команду для скачивания нескольких пакетов
     pkg_list = " ".join(pkg_names)
     #chroot_cmd = f"chroot /srv/chroot/{ubuntu_codename} apt-get -y install --allow-unauthenticated --download-only {pkg_list}"
-    chroot_cmd = f"chroot /srv/chroot/{ubuntu_codename} /bin/bash -c 'apt-get -y install --allow-unauthenticated --download-only {pkg_list}'"
-    
+    #chroot_cmd = f"chroot /srv/chroot/{ubuntu_codename} /bin/bash -c 'apt-get -y install --allow-unauthenticated --download-only {pkg_list}'"
+    chroot_cmd = f"chroot /srv/chroot/{ubuntu_codename} /bin/bash -c 'cd /var/cache/apt/archives && apt-get download $(apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances --no-pre-depends {pkg_list} | grep \"^\\w\")'"
+
     result = subprocess.run(chroot_cmd, shell=True, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -292,7 +304,8 @@ async def download_packages_debian(pkg_names, debian_version, chat_id):
     debian_codename = SUPPORTED_DEBIAN_VERSIONS[debian_version]
     setup_chroot_debian(debian_codename)
 
-    work_dir = os.path.join(BASE_DIR, f"{'_'.join(pkg_names)}_{debian_codename}")
+    pkg_string = f"{'_'.join(pkg_names)}_{debian_codename}"
+    work_dir = os.path.join(BASE_DIR,hashlib.sha256(pkg_string.encode()).hexdigest()[:32])
     os.makedirs(work_dir, exist_ok=True)
 
     archive_path = f"{work_dir}.tar.gz"
@@ -306,8 +319,8 @@ async def download_packages_debian(pkg_names, debian_version, chat_id):
     # Собираем команду для скачивания нескольких пакетов
     pkg_list = " ".join(pkg_names)
     #chroot_cmd = f"chroot /srv/chroot/{debian_codename} apt-get -y install --allow-unauthenticated --download-only {pkg_list}"
-    chroot_cmd = f"chroot /srv/chroot/{debian_codename} /bin/bash -c 'apt-get -y install --allow-unauthenticated --download-only {pkg_list}'"
-    
+    #chroot_cmd = f"chroot /srv/chroot/{debian_codename} /bin/bash -c 'apt-get -y install --allow-unauthenticated --download-only {pkg_list}'"
+    chroot_cmd = f"chroot /srv/chroot/{debian_codename} /bin/bash -c 'cd /var/cache/apt/archives && apt-get download $(apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts --no-breaks --no-replaces --no-enhances --no-pre-depends {pkg_list} | grep \"^\\w\")'"
     result = subprocess.run(chroot_cmd, shell=True, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -378,7 +391,7 @@ async def search_package(message: types.Message):
             setup_chroot_debian(codename)
         
         # Выполнение команды поиска пакета через apt-cache внутри chroot
-        chroot_cmd = f"chroot /srv/chroot/{codename} /bin/bash -c 'apt update && apt search {search_term}'"
+        chroot_cmd = f"chroot /srv/chroot/{codename} /bin/bash -c 'apt search {search_term}'"
         
         result = subprocess.run(chroot_cmd, shell=True, capture_output=True, text=True)
 
@@ -422,6 +435,7 @@ async def get_python_package(message: types.Message):
             return
         
         download_dir = f"{BASE_DIR}/{'_'.join(pkg_names)}_{os}_{version}"
+        
         download_path = Path(download_dir)
         if not download_path.exists():
             download_path.mkdir(parents=True, exist_ok=True)
@@ -523,6 +537,56 @@ async def get_package(message: types.Message):
         await message.reply(f"Ошибка: {str(e)}")
 
 
+def parse_package(pkg: str):
+    # Проверяем, начинается ли строка с @ (область)
+    if pkg.startswith('@'):
+        # Разделяем по первому / для области и имени пакета
+        parts = pkg.split('/', 1)
+        
+        # Это scoped package, например, @npmcli/arborist
+        name = parts[1]  # Имя пакета после области
+        # Проверяем, есть ли версия (вторая @)
+        if '@' in name:
+            name_parts = name.split('@', 1)
+            return parts[0] + '/' + name_parts[0], name_parts[1]  # Объединяем область с именем и указываем версию
+        else:
+            return parts[0] + '/' + name, None  # Нет версии, возвращаем только имя пакета
+    else:
+        # Если не scoped package, просто разделяем имя и версию по @
+        if '@' in pkg:
+            name, version = pkg.split('@', 1)
+            return name, version
+        else:
+            return pkg, None  # Без версии
+@dp.message(Command("getnpm"))
+async def get_npm_package(message: types.Message):
+    try:
+        _, *pkg_names = message.text.split()
+        chat_id=message.chat.id
+        if not pkg_names:
+            await message.reply("Пожалуйста, укажите хотя бы один пакет для скачивания.")
+            return       
+        
+        pkg_string = f"{'_'.join(pkg_names)}"
+        work_dir = os.path.join(BASE_DIR,hashlib.sha256(pkg_string.encode()).hexdigest()[:32])
+        downloader = NpmPackageDownloader(work_dir)
+
+        packages = [parse_package(pkg) for pkg in pkg_names]
+        await downloader._download_packages(packages)
+        archive_name = f"{work_dir}.tar.gz"
+
+
+        # # Упаковка скачанных пакетов в архив
+        shutil.make_archive(work_dir, 'gztar', work_dir)
+        shutil.rmtree(work_dir)
+        await message.reply(f"Пакеты '{' '.join(pkg_names)}' был успешно скачаны и упакованы в архив '{archive_name}'.")
+        download_url = f"http://{EXTERNAL_ADDR}:8080/download?file_path={archive_name}"
+        await message.reply(f"[Ваши пакеты доступены для скачивания]({download_url})")
+        
+        
+    except Exception as e:
+        await message.reply(f"Ошибка: {str(e)}")
+        
 # Функция для обработки HTTP-запросов (отправка файла по HTTP)
 async def handle(request):
     file_path = Path(BASE_DIR) / request.query.get("file_path", "")
@@ -538,18 +602,24 @@ async def handle(request):
 # Запуск HTTP-сервера
 async def start_http_server():
     app = web.Application()
-    app.router.add_get("/download", handle)  # Пример URL для скачивания файла
+    app.router.add_get("/download", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)  # Слушаем порт 8080
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
     await site.start()
-    
+    while True:  # Держим сервер активным
+        await asyncio.sleep(3600)
+def run_http_server():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start_http_server())   
 # Запуск бота
 async def main():
-    print("Бот и HTTP сервер запущены...")
-    # Запуск HTTP-сервера в фоновом режиме
-    asyncio.create_task(start_http_server())
-    
+    print("Запускаем HTTP-сервер в отдельном потоке...")
+    thread = threading.Thread(target=run_http_server, daemon=True)
+    thread.start()
+
+    print("Запускаем Telegram-бота...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
